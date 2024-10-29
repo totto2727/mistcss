@@ -1,83 +1,19 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
 import fsPromises from 'node:fs/promises'
-import path from 'node:path'
 import { parseArgs } from 'node:util'
 
 import chokidar from 'chokidar'
 import { globby } from 'globby'
 
-import { Data, parse } from './parser.js'
-import { render as astroRender } from './renderers/astro.js'
-import { render as reactRender } from './renderers/react.js'
-import { render as svelteRender } from './renderers/svelte.js'
-import { render as vueRender } from './renderers/vue.js'
-
-type Extension = '.tsx' | '.astro' | '.svelte'
-type Target = 'react' | 'hono' | 'astro' | 'vue' | 'svelte'
-
-async function createFiles(
-  mist: string,
-  targets: Readonly<[target: Target, exts: Extension]>[],
-): Promise<void> {
-  try {
-    const data = parse(fs.readFileSync(mist, 'utf8'))
-
-    const promises = targets.map(([target, ext]) => {
-      void createFile(data, mist, target, ext)
-    })
-
-    return Promise.all(promises).then(() => {
-      return
-    })
-  } catch (e) {
-    if (e instanceof Error) {
-      console.error(`Error ${mist}: ${e.message}`)
-    } else {
-      console.error(`Error ${mist}`)
-      console.error(e)
-    }
-  }
-}
-
-async function createFile(
-  data: Data[],
-  mist: string,
-  target: Target,
-  ext: Extension,
-): Promise<void> {
-  try {
-    const name = path.basename(mist, '.mist.css')
-    if (data[0]) {
-      let result = ''
-      switch (target) {
-        case 'react':
-          result = reactRender(name, data[0])
-          break
-        case 'hono':
-          result = reactRender(name, data[0], true)
-          break
-        case 'astro':
-          result = astroRender(name, data[0])
-          break
-        case 'vue':
-          result = vueRender(name, data[0])
-          break
-        case 'svelte':
-          result = svelteRender(name, data[0])
-          break
-      }
-      return fsPromises.writeFile(mist.replace(/\.css$/, ext), result)
-    }
-  } catch (e) {
-    if (e instanceof Error) {
-      console.error(`Error ${mist}: ${e.message}`)
-    } else {
-      console.error(`Error ${mist}`)
-      console.error(e)
-    }
-  }
-}
+import {
+  type Extension,
+  type Target,
+  createFiles,
+  getExtension,
+  getTarget,
+} from './core.js'
+import { parse } from './parser.js'
 
 function usage() {
   console.log(`Usage: mistcss <directory> [options]
@@ -120,13 +56,9 @@ if (!(await fsPromises.stat(dir)).isDirectory()) {
 const target = values.target ?? []
 
 target.forEach((target) => {
-  if (
-    target !== 'react' &&
-    target !== 'hono' &&
-    target !== 'astro' &&
-    target !== 'vue' &&
-    target !== 'svelte'
-  ) {
+  try {
+    getTarget(target)
+  } catch (e) {
     console.error('Invalid render option')
     usage()
     process.exit(1)
@@ -135,29 +67,30 @@ target.forEach((target) => {
 
 // Set extension
 function setExtension(
-  target: string,
+  targetStr: string,
 ): readonly [target: Target, ext: Extension] {
+  const target = getTarget(targetStr)
+  const ext = getExtension(target)
+
   switch (target) {
     case 'react':
       console.log('Rendering React components')
-      return [target, '.tsx'] as const
+      break
     case 'hono':
       console.log('Rendering Hono components')
-      return [target, '.tsx'] as const
+      break
     case 'astro':
       console.log('Rendering Astro components')
-      return [target, '.astro'] as const
+      break
     case 'vue':
       console.log('Rendering Vue components')
-      return [target, '.tsx'] as const
+      break
     case 'svelte':
       console.log('Rendering Svelte components')
-      return [target, '.svelte'] as const
-    default:
-      console.error('Invalid target option')
-      usage()
-      process.exit(1)
+      break
   }
+
+  return [target, ext] as const
 }
 
 const targetWithExt = target.map(setExtension)
@@ -171,7 +104,19 @@ if (values.watch) {
   console.log('Watching for changes')
   chokidar
     .watch('**/*.mist.css')
-    .on('change', (file) => void createFiles(file, targetWithExt))
+    .on('change', (file) => {
+      try {
+        const data = parse(fs.readFileSync(file, 'utf8'))
+        void createFiles(data, file, targetWithExt)
+      } catch (e) {
+        if (e instanceof Error) {
+          console.error(`Error ${file}: ${e.message}`)
+        } else {
+          console.error(`Error ${file}`)
+          console.error(e)
+        }
+      }
+    })
     .on('unlink', (file) => {
       targetWithExt.forEach(([, ext]) => {
         void fsPromises.unlink(file.replace(/\.css$/, ext))
@@ -181,7 +126,21 @@ if (values.watch) {
 
 // Build out files
 const cssFiles = await globby('**/*.mist.css')
-await Promise.all(cssFiles.map((mist) => createFiles(mist, targetWithExt)))
+await Promise.all(
+  cssFiles.map(async (mist) => {
+    try {
+      const data = parse(await fsPromises.readFile(mist, 'utf8'))
+      createFiles(data, mist, targetWithExt)
+    } catch (e) {
+      if (e instanceof Error) {
+        console.error(`Error ${mist}: ${e.message}`)
+      } else {
+        console.error(`Error ${mist}`)
+        console.error(e)
+      }
+    }
+  }),
+)
 
 // Clean out files without a matching mist file
 const promises = targetWithExt.map(async ([, ext]) =>
