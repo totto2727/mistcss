@@ -6,6 +6,12 @@
   "bin": {
     "mistcss": "lib/bin.js"
   },
+  "exports": {
+    "./core": {
+      "types": "./lib/core.d.ts",
+      "import": "./lib/core.js"
+    }
+  },
   "scripts": {
     "build": "rm -rf lib && tsc",
     "format": "prettier --write .",
